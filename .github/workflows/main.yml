@@ -52,90 +52,90 @@ jobs:
           docker push ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_REPOSITORY }}:latest
 
   # 4. Deploy to ECS (only if push succeeds)
-  # deploy-to-ecs:
-  #   needs: [push-to-ecr]
-  #   runs-on: ubuntu-latest
-  #   steps:
-  #     - uses: actions/checkout@v4
+  deploy-to-ecs:
+    needs: [push-to-ecr]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
 
-  #     - name: Configure AWS credentials
-  #       uses: aws-actions/configure-aws-credentials@v4
-  #       with:
-  #         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-  #         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-  #         aws-region: ${{ secrets.AWS_REGION }}
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
 
-  #     - name: Login to ECR
-  #       uses: aws-actions/amazon-ecr-login@v2
+      - name: Login to ECR
+        uses: aws-actions/amazon-ecr-login@v2
 
-  #     - name: Create ECS Cluster
-  #       run: |
-  #         aws ecs describe-clusters --clusters ${{ secrets.ECS_CLUSTER }} \
-  #             --query 'clusters[?status==`ACTIVE`].clusterName' \
-  #             --output text | grep -q ${{ secrets.ECS_CLUSTER }} || \
-  #           aws ecs create-cluster \
-  #             --cluster-name ${{ secrets.ECS_CLUSTER }} \
-  #             --capacity-providers FARGATE \
-  #             --default-capacity-provider-strategy capacityProvider=FARGATE,weight=1
+      - name: Create ECS Cluster
+        run: |
+          aws ecs describe-clusters --clusters ${{ secrets.ECS_CLUSTER }} \
+              --query 'clusters[?status==`ACTIVE`].clusterName' \
+              --output text | grep -q ${{ secrets.ECS_CLUSTER }} || \
+            aws ecs create-cluster \
+              --cluster-name ${{ secrets.ECS_CLUSTER }} \
+              --capacity-providers FARGATE \
+              --default-capacity-provider-strategy capacityProvider=FARGATE,weight=1
 
-  #     - name: Register ECS Task Definition
-  #       run: |
-  #         aws ecs describe-task-definition --task-definition ${{ secrets.ECS_TASK_DEFINITION }} 2>/dev/null || \
-  #         aws ecs register-task-definition \
-  #           --family ${{ secrets.ECS_TASK_DEFINITION }} \
-  #           --requires-compatibilities FARGATE \
-  #           --network-mode awsvpc \
-  #           --cpu "512" \
-  #           --memory "1024" \
-  #           --execution-role-arn arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/ecsTaskExecutionRole \
-  #           --container-definitions '[{
-  #             "name": "${{ secrets.CONTAINER_NAME }}",
-  #             "image": "${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_REPOSITORY }}:latest",
-  #             "portMappings": [{"containerPort": 3000, "protocol": "tcp"}],
-  #             "essential": true,
-  #             "logConfiguration": {
-  #               "logDriver": "awslogs",
-  #               "options": {
-  #                 "awslogs-group": "/ecs/${{ secrets.ECS_TASK_DEFINITION }}",
-  #                 "awslogs-region": "${{ secrets.AWS_REGION }}",
-  #                 "awslogs-stream-prefix": "ecs",
-  #                 "awslogs-create-group": "true"
-  #               }
-  #             }
-  #           }]'
+      - name: Register ECS Task Definition
+        run: |
+          aws ecs describe-task-definition --task-definition ${{ secrets.ECS_TASK_DEFINITION }} 2>/dev/null || \
+          aws ecs register-task-definition \
+            --family ${{ secrets.ECS_TASK_DEFINITION }} \
+            --requires-compatibilities FARGATE \
+            --network-mode awsvpc \
+            --cpu "512" \
+            --memory "1024" \
+            --execution-role-arn arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/ecsTaskExecutionRole \
+            --container-definitions '[{
+              "name": "${{ secrets.CONTAINER_NAME }}",
+              "image": "${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_REPOSITORY }}:latest",
+              "portMappings": [{"containerPort": 3000, "protocol": "tcp"}],
+              "essential": true,
+              "logConfiguration": {
+                "logDriver": "awslogs",
+                "options": {
+                  "awslogs-group": "/ecs/${{ secrets.ECS_TASK_DEFINITION }}",
+                  "awslogs-region": "${{ secrets.AWS_REGION }}",
+                  "awslogs-stream-prefix": "ecs",
+                  "awslogs-create-group": "true"
+                }
+              }
+            }]'
 
-  #     - name: Create ECS Service
-  #       run: |
-  #         aws ecs describe-services \
-  #           --cluster ${{ secrets.ECS_CLUSTER }} \
-  #           --services ${{ secrets.ECS_SERVICE }} \
-  #           --query 'services[?status==`ACTIVE`].serviceName' \
-  #           --output text | grep -q ${{ secrets.ECS_SERVICE }} || \
-  #         aws ecs create-service \
-  #           --cluster ${{ secrets.ECS_CLUSTER }} \
-  #           --service-name ${{ secrets.ECS_SERVICE }} \
-  #           --task-definition ${{ secrets.ECS_TASK_DEFINITION }} \
-  #           --desired-count 1 \
-  #           --launch-type FARGATE \
-  #           --network-configuration "awsvpcConfiguration={subnets=[${{ secrets.SUBNET_ID }}],securityGroups=[${{ secrets.SECURITY_GROUP_ID }}],assignPublicIp=ENABLED}"
+      - name: Create ECS Service
+        run: |
+          aws ecs describe-services \
+            --cluster ${{ secrets.ECS_CLUSTER }} \
+            --services ${{ secrets.ECS_SERVICE }} \
+            --query 'services[?status==`ACTIVE`].serviceName' \
+            --output text | grep -q ${{ secrets.ECS_SERVICE }} || \
+          aws ecs create-service \
+            --cluster ${{ secrets.ECS_CLUSTER }} \
+            --service-name ${{ secrets.ECS_SERVICE }} \
+            --task-definition ${{ secrets.ECS_TASK_DEFINITION }} \
+            --desired-count 1 \
+            --launch-type FARGATE \
+            --network-configuration "awsvpcConfiguration={subnets=[${{ secrets.SUBNET_ID }}],securityGroups=[${{ secrets.SECURITY_GROUP_ID }}],assignPublicIp=ENABLED}"
 
-  #     - name: Download task definition
-  #       run: |
-  #         aws ecs describe-task-definition --task-definition ${{ secrets.ECS_TASK_DEFINITION }} \
-  #           --query taskDefinition > task-definition.json
+      - name: Download task definition
+        run: |
+          aws ecs describe-task-definition --task-definition ${{ secrets.ECS_TASK_DEFINITION }} \
+            --query taskDefinition > task-definition.json
 
-  #     - name: Fill in the new image ID in the Amazon ECS task definition
-  #       id: task-def
-  #       uses: aws-actions/amazon-ecs-render-task-definition@v1
-  #       with:
-  #         task-definition: task-definition.json
-  #         container-name: ${{ secrets.CONTAINER_NAME }}
-  #         image: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_REPOSITORY }}:latest
+      - name: Fill in the new image ID in the Amazon ECS task definition
+        id: task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: task-definition.json
+          container-name: ${{ secrets.CONTAINER_NAME }}
+          image: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_REPOSITORY }}:latest
 
-  #     - name: Deploy Amazon ECS task definition
-  #       uses: aws-actions/amazon-ecs-deploy-task-definition@v2
-  #       with:
-  #         task-definition: ${{ steps.task-def.outputs.task-definition }}
-  #         service: ${{ secrets.ECS_SERVICE }}
-  #         cluster: ${{ secrets.ECS_CLUSTER }}
-  #         wait-for-service-stability: true
+      - name: Deploy Amazon ECS task definition
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.task-def.outputs.task-definition }}
+          service: ${{ secrets.ECS_SERVICE }}
+          cluster: ${{ secrets.ECS_CLUSTER }}
+          wait-for-service-stability: true
