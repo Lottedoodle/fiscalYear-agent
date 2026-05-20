@@ -3,6 +3,7 @@ name: Production Pipeline
 on:
   push:
     branches: [main]
+  workflow_dispatch:
 
 jobs:
   # 1. Build (no push yet)
@@ -90,8 +91,54 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ secrets.AWS_REGION }}
 
+      - name: Verify AWS context (account, region, subnets, SG)
+        run: |
+          echo "== Caller identity =="
+          aws sts get-caller-identity
+
+          echo
+          echo "== Current region =="
+          aws configure list | grep region || true
+
+          echo
+          echo "== Subnet check =="
+          IFS=',' read -ra SUBNETS <<< "${{ secrets.SUBNET_ID }}"
+          for s in "${SUBNETS[@]}"; do
+            echo "Checking subnet: $s"
+            if ! aws ec2 describe-subnets --subnet-ids "$s" \
+                  --query 'Subnets[0].[SubnetId,VpcId,AvailabilityZone]' --output text; then
+              echo "::error::Subnet '$s' not found in region '${{ secrets.AWS_REGION }}' for this account."
+              exit 1
+            fi
+          done
+
+          echo
+          echo "== Security group check =="
+          IFS=',' read -ra SGS <<< "${{ secrets.SECURITY_GROUP_ID }}"
+          for g in "${SGS[@]}"; do
+            echo "Checking SG: $g"
+            if ! aws ec2 describe-security-groups --group-ids "$g" \
+                  --query 'SecurityGroups[0].[GroupId,VpcId,GroupName]' --output text; then
+              echo "::error::Security Group '$g' not found in region '${{ secrets.AWS_REGION }}' for this account."
+              exit 1
+            fi
+          done
+
       - name: Login to ECR
         uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Ensure CloudWatch log group exists
+        run: |
+          LOG_GROUP="/ecs/${{ secrets.ECS_TASK_DEFINITION }}"
+          if aws logs describe-log-groups --log-group-name-prefix "$LOG_GROUP" \
+               --query "logGroups[?logGroupName=='$LOG_GROUP'] | length(@)" \
+               --output text | grep -q '^1$'; then
+            echo "Log group $LOG_GROUP already exists."
+          else
+            echo "Creating log group: $LOG_GROUP"
+            aws logs create-log-group --log-group-name "$LOG_GROUP"
+            aws logs put-retention-policy --log-group-name "$LOG_GROUP" --retention-in-days 14
+          fi
 
       - name: Create ECS Cluster
         run: |
@@ -123,8 +170,7 @@ jobs:
                 "options": {
                   "awslogs-group": "/ecs/${{ secrets.ECS_TASK_DEFINITION }}",
                   "awslogs-region": "${{ secrets.AWS_REGION }}",
-                  "awslogs-stream-prefix": "ecs",
-                  "awslogs-create-group": "true"
+                  "awslogs-stream-prefix": "ecs"
                 }
               }
             }]'
@@ -149,6 +195,14 @@ jobs:
           aws ecs describe-task-definition --task-definition ${{ secrets.ECS_TASK_DEFINITION }} \
             --query taskDefinition > task-definition.json
 
+      - name: Strip unsupported logConfiguration options
+        run: |
+          # awslogs-create-group requires logs:CreateLogGroup which ecsTaskExecutionRole
+          # does not have by default; we pre-create the log group instead.
+          jq 'del(.containerDefinitions[]?.logConfiguration.options."awslogs-create-group")' \
+            task-definition.json > task-definition.stripped.json
+          mv task-definition.stripped.json task-definition.json
+
       - name: Fill in the new image ID in the Amazon ECS task definition
         id: task-def
         uses: aws-actions/amazon-ecs-render-task-definition@v1
@@ -158,9 +212,66 @@ jobs:
           image: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_REPOSITORY }}:latest
 
       - name: Deploy Amazon ECS task definition
+        id: deploy
         uses: aws-actions/amazon-ecs-deploy-task-definition@v2
         with:
           task-definition: ${{ steps.task-def.outputs.task-definition }}
           service: ${{ secrets.ECS_SERVICE }}
           cluster: ${{ secrets.ECS_CLUSTER }}
           wait-for-service-stability: true
+
+      - name: Diagnose ECS failure
+        if: failure()
+        run: |
+          set +e
+
+          echo "==================== Service events (latest 20) ===================="
+          aws ecs describe-services \
+            --cluster "${{ secrets.ECS_CLUSTER }}" \
+            --services "${{ secrets.ECS_SERVICE }}" \
+            --query 'services[0].events[0:20].[createdAt,message]' \
+            --output table
+
+          echo
+          echo "==================== Stopped tasks (latest 5) ===================="
+          STOPPED=$(aws ecs list-tasks \
+            --cluster "${{ secrets.ECS_CLUSTER }}" \
+            --service-name "${{ secrets.ECS_SERVICE }}" \
+            --desired-status STOPPED \
+            --max-items 5 \
+            --query 'taskArns' --output text)
+          echo "Stopped task ARNs: $STOPPED"
+
+          if [ -n "$STOPPED" ] && [ "$STOPPED" != "None" ]; then
+            aws ecs describe-tasks \
+              --cluster "${{ secrets.ECS_CLUSTER }}" \
+              --tasks $STOPPED \
+              --query 'tasks[].{TaskArn:taskArn,StoppedReason:stoppedReason,ExitCode:containers[0].exitCode,ContainerReason:containers[0].reason,LastStatus:lastStatus}' \
+              --output table
+          fi
+
+          echo
+          echo "==================== Recent CloudWatch logs ===================="
+          LOG_GROUP="/ecs/${{ secrets.ECS_TASK_DEFINITION }}"
+          echo "Log group: $LOG_GROUP"
+
+          STREAMS=$(aws logs describe-log-streams \
+            --log-group-name "$LOG_GROUP" \
+            --order-by LastEventTime --descending \
+            --max-items 3 \
+            --query 'logStreams[].logStreamName' --output text 2>/dev/null)
+
+          if [ -z "$STREAMS" ] || [ "$STREAMS" = "None" ]; then
+            echo "(no log streams found — container may not have started)"
+          else
+            for s in $STREAMS; do
+              echo "----- Stream: $s -----"
+              aws logs get-log-events \
+                --log-group-name "$LOG_GROUP" \
+                --log-stream-name "$s" \
+                --limit 100 \
+                --query 'events[].message' --output text
+            done
+          fi
+
+          exit 1
