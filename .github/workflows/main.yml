@@ -58,6 +58,31 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Verify required secrets
+        env:
+          AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
+          ECS_CLUSTER: ${{ secrets.ECS_CLUSTER }}
+          ECS_SERVICE: ${{ secrets.ECS_SERVICE }}
+          ECS_TASK_DEFINITION: ${{ secrets.ECS_TASK_DEFINITION }}
+          CONTAINER_NAME: ${{ secrets.CONTAINER_NAME }}
+          SUBNET_ID: ${{ secrets.SUBNET_ID }}
+          SECURITY_GROUP_ID: ${{ secrets.SECURITY_GROUP_ID }}
+        run: |
+          missing=()
+          for v in AWS_ACCOUNT_ID AWS_REGION ECR_REPOSITORY ECS_CLUSTER ECS_SERVICE ECS_TASK_DEFINITION CONTAINER_NAME SUBNET_ID SECURITY_GROUP_ID; do
+            if [ -z "${!v}" ]; then
+              missing+=("$v")
+            fi
+          done
+          if [ ${#missing[@]} -ne 0 ]; then
+            echo "::error::Missing required GitHub secrets: ${missing[*]}"
+            echo "Set them at: Repo → Settings → Secrets and variables → Actions"
+            exit 1
+          fi
+          echo "All required secrets are set."
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
